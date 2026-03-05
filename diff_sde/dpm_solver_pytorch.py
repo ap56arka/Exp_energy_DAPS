@@ -13,6 +13,7 @@ class NoiseScheduleVP:
             alphas_cumprod=None,
             continuous_beta_0=0.1,
             continuous_beta_1=20.,
+            total_N = 1000
         ):
         """Create a wrapper class for the forward SDE (VP type).
 
@@ -109,9 +110,11 @@ class NoiseScheduleVP:
             self.t_array = torch.linspace(0., 1., self.total_N + 1)[1:].reshape((1, -1))
             self.log_alpha_array = log_alphas.reshape((1, -1,))
         else:
-            self.total_N = 1000
+            #self.total_N = 1000
+            self.total_N = total_N
             self.beta_0 = continuous_beta_0
             self.beta_1 = continuous_beta_1
+            self.betas = torch.linspace(self.beta_0, self.beta_1, self.total_N, device='cuda')
             self.cosine_s = 0.008
             self.cosine_beta_max = 999.
             self.cosine_t_max = math.atan(self.cosine_beta_max * (1. + self.cosine_s) / math.pi) * 2. * (1. + self.cosine_s) / math.pi - self.cosine_s

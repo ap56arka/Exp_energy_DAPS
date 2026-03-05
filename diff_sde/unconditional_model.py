@@ -105,6 +105,11 @@ class Bandit_ScoreBase(nn.Module):
         result = - (score + 0*self.q[0].calculate_guidance(x, t, None)) * self.marginal_prob_std(t)[1][..., None]
         return result
     
+    def without_guidance_wrapper(self, x,t):
+        score = self(x, t)
+        result = - (score) * self.marginal_prob_std(t)[1][..., None]
+        return result
+    
     def dpm_wrapper_sample(self, dim, batch_size, **kwargs):
         with torch.no_grad():
             init_x = torch.randn(batch_size, dim, device=self.device)
@@ -115,6 +120,14 @@ class Bandit_ScoreBase(nn.Module):
 
 
     def sample(self, states=None, sample_per_state=16, diffusion_steps=15):
+        self.eval()
+        with torch.no_grad():
+            results = self.dpm_wrapper_sample(self.output_dim, batch_size=sample_per_state, steps=diffusion_steps, order=2, method='multistep')
+            actions = results[:, :]
+        self.train()
+        return actions
+    
+    def sample_no_guide(self, states=None, sample_per_state=16, diffusion_steps=15):
         self.eval()
         with torch.no_grad():
             results = self.dpm_wrapper_sample(self.output_dim, batch_size=sample_per_state, steps=diffusion_steps, order=2, method='multistep')
@@ -153,3 +166,67 @@ class Bandit_MlpScoreNet(Bandit_ScoreBase):
         # Normalize output
         h = h / self.marginal_prob_std(t)[1][..., None]
         return h
+    
+
+class MyScoreNet(nn.Module):
+    def __init__(self, input_dim, output_dim, marginal_prob_std, embed_dim=32, args=None):
+        super().__init__()
+        # The swish activation function
+        self.output_dim = output_dim
+        self.act = lambda x: x * torch.sigmoid(x)
+        self.dense1 = Dense(embed_dim, 32)
+        self.dense2 = Dense(output_dim, 256 - 32)
+        self.block1 = nn.Sequential(
+            nn.Linear(256, 512),
+            SiLU(),
+            nn.Linear(512, 512),
+            SiLU(),
+            nn.Linear(512, 512),
+            SiLU(),
+            nn.Linear(512, 512),
+            SiLU(),
+            nn.Linear(512, 256),
+        )
+        self.decoder = Dense(256, output_dim)
+        self.embed = nn.Sequential(GaussianFourierProjection(embed_dim=32), nn.Linear(32, 32))
+        self.marginal_prob_std = marginal_prob_std
+        #self.noise_schedule = dpm_solver_pytorch.NoiseScheduleVP(schedule='linear')
+        #self.noise_schedule = noise_schedule
+        
+        self.device=args.device
+        
+        
+
+
+    def forward(self, x, t, condition=None):
+        x=x
+        # Obtain the Gaussian random feature embedding for t
+            
+        embed = self.act(self.embed(t))
+        # Encoding path
+        h = torch.cat((self.dense2(x), self.dense1(embed)),dim=-1)
+        
+        h = self.block1(h)
+        h = self.decoder(self.act(h))
+        # Normalize output
+        h = h / self.marginal_prob_std(t)[1][..., None]
+        return h
+    
+    def without_guidance_wrapper(self, x,t):
+        score = self(x, t)
+        result = - (score) * self.marginal_prob_std(t)[1][..., None]
+        return result
+    
+    def dpm_wrapper_sample(self, x_t, noise_schedule, **kwargs):
+        with torch.no_grad():
+            #init_x = torch.randn(batch_size, dim, device=self.device)
+            dpm_solver = dpm_solver_pytorch.DPM_Solver(self.without_guidance_wrapper, noise_schedule)
+            return dpm_solver.sample(x_t, **kwargs)
+    
+    def sample_no_guide(self, x_t, noise_schedule, diffusion_steps=15):
+        self.eval()
+        with torch.no_grad():
+            results = self.dpm_wrapper_sample(x_t, noise_schedule, steps=diffusion_steps, order=2, method='multistep')
+            actions = results[:, :]
+        self.train()
+        return actions
